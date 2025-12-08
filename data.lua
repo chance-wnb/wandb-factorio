@@ -1,0 +1,2 @@
+-- This mod doesn't add any new prototypes, so data.lua is empty
+-- but we include it for completeness
