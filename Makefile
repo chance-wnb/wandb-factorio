@@ -4,7 +4,7 @@ ifneq (,$(wildcard .env))
     export
 endif
 
-.PHONY: build-rust-client run-rust-client run-rust-client-debug setup-rust-client
+.PHONY: build-rust-client run-rust-client run-rust-client-debug setup-rust-client read-pipe
 
 # Generate Cargo.toml from template with environment variables
 setup-rust-client:
@@ -26,3 +26,15 @@ run-rust-client:
 # Run the Rust client with debug logging
 run-rust-client-debug:
 	cd rust_client && RUST_LOG=debug cargo run
+
+# Read from Factorio named pipe and print to screen
+read-pipe:
+	@if [ -z "$$FACTORIO_PIPE_PATH" ]; then \
+		echo "Error: FACTORIO_PIPE_PATH not set. Please configure .env file."; \
+		exit 1; \
+	fi
+	@echo "Reading from pipe: $$FACTORIO_PIPE_PATH"
+	@echo "Press Ctrl+C to stop..."
+	@while true; do \
+		cat "$$FACTORIO_PIPE_PATH" 2>/dev/null || sleep 1; \
+	done
