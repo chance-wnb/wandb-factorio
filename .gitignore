@@ -1,0 +1,28 @@
+# Environment variables
+.env
+
+# Rust build artifacts
+rust_client/target/
+rust_client/Cargo.toml
+rust_client/Cargo.lock
+rust_client/.cargo/
+
+# W&B artifacts
+rust_client/.wandb/
+.wandb/
+wandb-internal.log
+rust_client/wandb-internal.log
+
+# Factorio mod build artifacts
+*.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
