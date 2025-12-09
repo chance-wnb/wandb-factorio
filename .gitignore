@@ -3,7 +3,9 @@
 
 # Rust build artifacts
 rust_client/target/
+rust_client/Cargo.toml
 rust_client/Cargo.lock
+rust_client/.cargo/
 
 # W&B artifacts
 rust_client/.wandb/

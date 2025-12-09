@@ -4,10 +4,19 @@ ifneq (,$(wildcard .env))
     export
 endif
 
-.PHONY: build-rust-client run-rust-client run-rust-client-debug
+.PHONY: build-rust-client run-rust-client run-rust-client-debug setup-rust-client
+
+# Generate Cargo.toml from template with environment variables
+setup-rust-client:
+	@if [ -z "$$WANDB_SDK_PATH" ]; then \
+		echo "Error: WANDB_SDK_PATH not set. Please configure .env file."; \
+		exit 1; \
+	fi
+	@envsubst < rust_client/Cargo.toml.template > rust_client/Cargo.toml
+	@echo "Generated rust_client/Cargo.toml with WANDB_SDK_PATH=$$WANDB_SDK_PATH"
 
 # Build the Rust client
-build-rust-client:
+build-rust-client: setup-rust-client
 	cd rust_client && cargo build --release
 
 # Run the Rust client with W&B tracking

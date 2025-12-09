@@ -1,0 +1,7 @@
+[package]
+name = "rust_client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wandb = { path = "${WANDB_SDK_PATH}" }
