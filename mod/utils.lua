@@ -7,11 +7,10 @@ local function format_number(num)
     return num
   end
 
-  -- Round to 5 decimal places
-  local multiplier = 10^5
-  local rounded = math.floor(num * multiplier + 0.5) / multiplier
-
-  return rounded
+  -- Round to 5 decimal places using string formatting then convert back to number
+  -- This ensures clean decimal representation in JSON
+  local str = string.format("%.5f", num)
+  return tonumber(str)
 end
 
 -- Recursively format all numbers in a table to max 5 decimal places

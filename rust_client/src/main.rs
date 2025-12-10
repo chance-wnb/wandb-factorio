@@ -1,6 +1,10 @@
+mod event_mediator;
 mod pipe_cache;
+mod wandb_manager;
 
+use event_mediator::EventMediator;
 use pipe_cache::PipeCache;
+use wandb_manager::WandbManager;
 use std::env;
 use std::thread;
 use std::time::Duration;
@@ -26,6 +30,10 @@ fn main() {
     // Create pipe cache with 10,000 event capacity
     let cache = PipeCache::new(10000);
 
+    // Create WandB manager and event mediator
+    let wandb_manager = WandbManager::new();
+    let mediator = EventMediator::new(wandb_manager);
+
     // Start the background reader thread
     cache.start_reader(pipe_path, log_path);
 
@@ -38,16 +46,7 @@ fn main() {
         // Drain all events from the cache
         let events = cache.drain_all();
 
-        println!("=== Processing Cycle ===");
-        println!("Drained {} events from queue", events.len());
-
-        if !events.is_empty() {
-            // Process each event
-            for (i, event) in events.iter().enumerate() {
-                println!("  [{}] {}", i + 1, event);
-                // TODO: Parse JSON, extract metrics, log to W&B, etc.
-            }
-        }
-        println!();
+        // Process events through the mediator
+        mediator.process_events(events);
     }
 }
