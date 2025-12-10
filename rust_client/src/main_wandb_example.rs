@@ -22,7 +22,7 @@ fn main() {
     metrics.insert("power_consumption_mw".to_string(), wandb::run::Value::Float(125.5));
     metrics.insert("pollution_per_minute".to_string(), wandb::run::Value::Float(23.8));
 
-    run.log(metrics);
+    run.log(metrics, None);
     println!("Metrics logged!");
 
     // Finish the run
