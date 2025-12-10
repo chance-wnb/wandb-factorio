@@ -144,7 +144,7 @@ impl WandbManager {
 
             // Log metrics with step
             if !metrics.is_empty() {
-                run.log_with_step(metrics, Some(cycle as i64));
+                run.log(metrics, Some(cycle as i64));
                 println!(
                     "📊 Logged {} total metrics ({} active: {}p/{}c) at step {}",
                     total_metrics, active_prod + active_cons, active_prod, active_cons, cycle
