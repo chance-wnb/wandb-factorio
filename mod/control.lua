@@ -1,13 +1,11 @@
 -- Import utility functions
 local utils = require("utils")
 
--- Generate a new session ID with random component
+-- Generate a new session ID using level name and current tick
 local function generate_session_id()
   local level_name = script.level.level_name or "unknown"
-  local init_tick = game.tick
-  -- Generate a random suffix to ensure uniqueness on each load
-  local random_suffix = math.random(100000, 999999)
-  return level_name .. "_" .. init_tick .. "_" .. random_suffix
+  local current_tick = game.tick
+  return level_name .. "_" .. current_tick
 end
 
 -- Local flag to track if we've regenerated session after load
@@ -16,7 +14,7 @@ local session_regenerated = false
 -- Initialize session ID on new game
 script.on_init(function()
   storage.session_id = generate_session_id()
-  storage.last_tick = game.tick
+  storage.last_tick = game.tick 
 end)
 
 -- On load, set local flag to regenerate session
@@ -31,6 +29,16 @@ local function check_and_regenerate_session()
     storage.session_id = generate_session_id()
     storage.last_tick = game.tick
     session_regenerated = true
+
+    -- Send session init event to named pipe
+    local init_event = {
+      type = "session_init",
+      session_id = storage.session_id,
+      tick = game.tick,
+      level_name = script.level.level_name or "unknown"
+    }
+    local json_str = helpers.table_to_json(init_event)
+    helpers.write_file("events.pipe", json_str .. "\n", true)
 
     -- Debug output
     game.print("Session ID regenerated: " .. (old_session or "none") .. " -> " .. storage.session_id)
@@ -62,6 +70,7 @@ script.on_nth_tick(120, function(event)
 
     -- Build stats data structure
     local stats_data = {
+      type = "stats",
       session_id = storage.session_id,
       cycle = math.floor(event.tick / 120),
       tick = event.tick,
