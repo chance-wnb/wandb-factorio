@@ -1,15 +1,15 @@
-# Factorio Rust Client
+# Factorio Rust Client with WandB Integration
 
-Rust client for reading and processing Factorio game events via named pipes.
+Rust client for reading Factorio game events via named pipes and logging metrics to Weights & Biases (WandB).
 
 ## Features
 
 - **Pipe Reader with Cache**: Continuously reads from a named pipe and caches events in memory
 - **Thread-Safe Access**: Multiple parts of your application can access cached events concurrently
-- **Flexible Consumption**: Non-destructive reads (peek) or destructive reads (drain)
-- **Filtering Support**: Search and filter events by content
-- **Optional Logging**: Can write events to a log file while caching
-- **W&B Integration**: Example code for logging metrics to Weights & Biases
+- **WandB Session Management**: Automatic session lifecycle management with singleton pattern
+- **Event Parsing**: JSONL event parsing with typed data structures
+- **Auto-Recovery**: Creates WandB sessions automatically if stats arrive without initialization
+- **Session Switching**: Detects session ID changes and manages transitions seamlessly
 
 ## Architecture
 
@@ -17,14 +17,21 @@ Rust client for reading and processing Factorio game events via named pipes.
 
 1. **`pipe_cache.rs`**: Thread-safe circular buffer for caching pipe events
    - Runs a background thread that continuously reads from the named pipe
-   - Provides multiple access patterns (get all, get last N, drain, filter, etc.)
+   - Buffers up to 10,000 events in lock-free queue
    - Automatically handles pipe reconnection
 
-2. **`main.rs`**: Example application that monitors events
-   - Reads from environment variables for configuration
-   - Displays event statistics every 5 seconds
+2. **`wandb_manager.rs`**: WandB session manager singleton
+   - Manages WandB session lifecycle (init, log, finish)
+   - Handles `session_init` events to create new runs
+   - Handles `stats` events to log metrics
+   - Automatic session switching and recovery
 
-3. **`main_wandb_example.rs`**: Original W&B integration example (for reference)
+3. **`main.rs`**: Main event processing loop
+   - Parses JSONL events from Factorio
+   - Routes events to WandB manager
+   - Processes events every 5 seconds
+
+4. **`main_wandb_example.rs`**: Original W&B integration example (for reference)
 
 ## Prerequisites
 
@@ -107,11 +114,27 @@ let session_events = cache.find_containing("session_id");
 
 ## Event Format
 
-Events are JSON lines from the Factorio mod:
+### session_init Event
+Sent when Factorio starts a new game or loads a save.
 
 ```json
 {
-  "session_id": "nauvis_0_123456",
+  "type": "session_init",
+  "session_id": "nauvis_12345",
+  "tick": 12345,
+  "level_name": "nauvis"
+}
+```
+
+**Behavior:** Closes any existing WandB run and starts a new one.
+
+### stats Event
+Sent every 120 ticks (2 seconds) with production and consumption metrics.
+
+```json
+{
+  "type": "stats",
+  "session_id": "nauvis_12345",
   "cycle": 100,
   "tick": 12000,
   "products_production": {
@@ -119,27 +142,57 @@ Events are JSON lines from the Factorio mod:
     "copper-plate": 30.25
   },
   "materials_consumption": {
-    "coal": 4,
+    "coal": 4.0,
     "iron-ore": 20.5
   }
 }
 ```
 
-## Integration with W&B
+**Behavior:** Logs metrics to WandB. Creates session if none exists.
 
-For W&B integration example, see `main_wandb_example.rs`. You can combine the pipe reader with W&B logging:
+## WandB Integration
 
-```rust
-// Parse JSON events and log to W&B
-let events = cache.drain_all();
-for event_str in events {
-    let event: serde_json::Value = serde_json::from_str(&event_str)?;
+### Session Lifecycle
 
-    // Log to W&B
-    let mut metrics = HashMap::new();
-    // ... extract metrics from event
-    run.log(metrics);
-}
+1. **Session Creation**
+   - Triggered by `session_init` event or first `stats` event
+   - Run name format: `{session_id}_{random_seed}`
+   - Project: `factorio-experiments`
+   - Entity: `wandb`
+
+2. **Metric Logging**
+   - Production metrics: `production/{item_name}`
+   - Consumption metrics: `consumption/{item_name}`
+   - Step number: Uses `cycle` field from stats event via `HistoryStep` protobuf field
+
+3. **Session Termination**
+   - Automatically closed when new `session_init` is received
+   - Called on application shutdown via `Drop` trait
+
+### Key Features
+
+- **Singleton Pattern:** Only one active WandB session at a time
+- **Auto-Recovery:** Creates session if stats arrive without active session
+- **Session Switching:** Detects session ID changes and switches automatically
+- **Thread-Safe:** Uses `Arc<Mutex<>>` for concurrent access
+
+### Example Output
+
+```
+Starting Factorio Rust Client...
+Pipe reader started. Monitoring events...
+
+=== Processing Cycle ===
+Drained 1 events from queue
+  [1] SessionInit: nauvis_12345 (tick: 12345, level: nauvis)
+📍 Session init received: nauvis_12345
+🚀 Starting new WandB run: nauvis_12345_1847293
+✅ WandB run initialized successfully
+
+=== Processing Cycle ===
+Drained 5 events from queue
+  [1] Stats: cycle=1, tick=120, production_items=2, consumption_items=3
+📊 Logged 5 metrics at cycle 1
 ```
 
 ## Building
