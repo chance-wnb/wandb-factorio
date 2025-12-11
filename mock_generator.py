@@ -19,11 +19,15 @@ for p in POSSIBLE_PATHS:
     except:
         continue
 
-SESSION_ID = f"nauvis_{int(time.time())}_{random.randint(100000, 999999)}"
+# Session ID format: level_tick_random (matches definition)
+LEVEL_NAME = "nauvis"
+INIT_TICK = int(time.time()) 
+SESSION_ID = f"{LEVEL_NAME}_{INIT_TICK}_{random.randint(100000, 999999)}"
 
 EVENT_TYPES = ["on_built_entity", "on_player_mined_entity", "on_research_started", "on_research_finished"]
 ENTITIES = ["assembling-machine-1", "inserter", "transport-belt", "iron-chest", "stone-furnace"]
 TECHS = ["automation", "logistics", "steel-processing", "electronics"]
+RECIPES = ["iron-plate", "copper-cable", "electronic-circuit", "inserter"]
 ITEMS = ["iron-plate", "copper-plate", "electronic-circuit", "coal", "stone"]
 FLUIDS = ["water", "crude-oil", "petroleum-gas"]
 
@@ -34,32 +38,44 @@ def ensure_pipe():
             print(f"Created named pipe at {PIPE_PATH}")
         except OSError as e:
             print(f"Failed to create pipe: {e}")
-            
+
+# Generate session_init event (this is the key event for Rust Client to recognize a new Run)
+def generate_session_init():
+    return {
+        "type": "session_init",
+        "session_id": SESSION_ID,
+        "tick": 0,
+        "level_name": LEVEL_NAME
+    }
+
 def generate_event(tick):
-    event_name = random.choice(EVENT_TYPES)
+    event_name = random.choice(EVENT_TYPES + ["on_player_crafted_item"])
     
     payload = {
-        "stream": "event", 
+        "type": "event", 
         "session_id": SESSION_ID,
         "tick": tick,
         "event_name": event_name,
         "player_index": 1,
     }
     
-    # Populate different fields based on event type
     if "research" in event_name:
         payload["tech_name"] = random.choice(TECHS)
+        payload["level"] = random.randint(1, 5)
         if event_name == "on_research_finished":
-            payload["duration"] = round(random.uniform(60, 600), 2)  # Simulated research duration (seconds)
+            payload["duration"] = round(random.uniform(60, 600), 2)
+    elif event_name == "on_player_crafted_item":
+        item = random.choice(RECIPES)
+        payload["item_name"] = item
+        payload["count"] = random.randint(1, 5)
+        payload["recipe"] = item
     else:
-        # Build/Mine events
         payload["entity"] = random.choice(ENTITIES)
         payload["position"] = {"x": round(random.uniform(0, 100), 1), "y": round(random.uniform(0, 100), 1)}
         
     return payload
 
 def format_number(num):
-    # Return number rounded to 5 decimal places (consistent with Chance's utils.lua)
     return round(num, 5)
 
 def generate_status(tick):
@@ -77,9 +93,19 @@ def generate_status(tick):
             products_prod[fluid] = format_number(random.uniform(0, 500))
 
     return {
+        "type": "stats",  # Matches Chance's 'stats' type
         "session_id": SESSION_ID,
         "cycle": tick // 120,
         "tick": tick,
+        
+        # Extended fields: player state (Rust Client may not use these yet, but useful for future)
+        "player": {
+            "position": {"x": round(random.uniform(0, 100), 1), "y": round(random.uniform(0, 100), 1)},
+            "surface": "nauvis",
+            "health": 250.0
+        },
+        "screenshot_path": f"scans/{SESSION_ID}/tick_{tick}.jpg",
+
         "products_production": products_prod,
         "materials_consumption": materials_cons
     }
@@ -90,27 +116,32 @@ def main():
     
     ensure_pipe()
     
-    tick = 0
     try:
         with open(PIPE_PATH, "w") as f:
+            # 1. Send session_init at startup
+            init_data = generate_session_init()
+            f.write(json.dumps(init_data) + "\n")
+            f.flush()
+            print(f"[Init] Session Initialized")
+            
+            tick = 0
             while True:
-                # 1. Simulate game tick
                 time.sleep(0.5) 
                 tick += 30 
                 
-                # 2. Randomly generate Event
+                # 2. Randomly generate events
                 if random.random() < 0.2: 
                     event_data = generate_event(tick)
                     f.write(json.dumps(event_data) + "\n")
                     f.flush()
                     print(f"[Event] {event_data['event_name']}")
 
-                # 3. Periodically generate Status
+                # 3. Periodically generate status snapshots
                 if tick % 120 == 0:
                     status_data = generate_status(tick)
                     f.write(json.dumps(status_data) + "\n")
                     f.flush()
-                    print(f"[Status] Tick {tick}")
+                    print(f"[Stats] Tick {tick}")
                     
     except KeyboardInterrupt:
         print("\nStopping Mock Generator.")
