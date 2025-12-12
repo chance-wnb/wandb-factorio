@@ -1,4 +1,5 @@
 use crate::wandb_manager::WandbManager;
+use crate::weave_manager::WeaveManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -20,21 +21,30 @@ pub enum FactorioEvent {
         products_production: HashMap<String, f64>,
         materials_consumption: HashMap<String, f64>,
     },
+    // TODO: Add Weave-specific event types here
+    // #[serde(rename = "trace_start")]
+    // TraceStart { ... },
+    // #[serde(rename = "trace_end")]
+    // TraceEnd { ... },
 }
 
-/// Event mediator that routes Factorio events to the WandB manager
+/// Event mediator that routes Factorio events to WandB and Weave managers
 pub struct EventMediator {
     wandb_manager: WandbManager,
+    weave_manager: WeaveManager,
 }
 
 impl EventMediator {
     /// Creates a new event mediator
-    pub fn new(wandb_manager: WandbManager) -> Self {
-        EventMediator { wandb_manager }
+    pub fn new(wandb_manager: WandbManager, weave_manager: WeaveManager) -> Self {
+        EventMediator {
+            wandb_manager,
+            weave_manager,
+        }
     }
 
-    /// Processes a batch of JSONL event strings
-    pub fn process_events(&self, events: Vec<String>) {
+    /// Processes a batch of JSONL event strings (async)
+    pub async fn process_events(&self, events: Vec<String>) {
         if events.is_empty() {
             return;
         }
@@ -43,16 +53,16 @@ impl EventMediator {
         println!("Drained {} events from queue", events.len());
 
         for (i, event_str) in events.iter().enumerate() {
-            self.process_single_event(i + 1, event_str);
+            self.process_single_event(i + 1, event_str).await;
         }
         println!();
     }
 
-    /// Processes a single JSONL event string
-    fn process_single_event(&self, index: usize, event_str: &str) {
+    /// Processes a single JSONL event string (async)
+    async fn process_single_event(&self, index: usize, event_str: &str) {
         match serde_json::from_str::<FactorioEvent>(event_str) {
             Ok(event) => {
-                self.route_event(index, event);
+                self.route_event(index, event).await;
             }
             Err(e) => {
                 eprintln!(
@@ -63,8 +73,8 @@ impl EventMediator {
         }
     }
 
-    /// Routes a parsed event to the appropriate handler
-    fn route_event(&self, index: usize, event: FactorioEvent) {
+    /// Routes a parsed event to the appropriate handler (async)
+    async fn route_event(&self, index: usize, event: FactorioEvent) {
         match event {
             FactorioEvent::SessionInit {
                 session_id,
@@ -75,8 +85,13 @@ impl EventMediator {
                     "  [{}] SessionInit: {} (tick: {}, level: {})",
                     index, session_id, tick, level_name
                 );
+
+                // Notify both WandB and Weave managers
                 self.wandb_manager
-                    .handle_session_init(session_id, tick, level_name);
+                    .handle_session_init(session_id.clone(), tick, level_name.clone());
+                self.weave_manager
+                    .handle_session_init(session_id, tick, level_name)
+                    .await;
             }
             FactorioEvent::Stats {
                 session_id,
@@ -102,5 +117,12 @@ impl EventMediator {
                 );
             }
         }
+    }
+
+    /// Shutdown both managers gracefully
+    pub async fn shutdown(&self) {
+        println!("Shutting down event mediator...");
+        self.weave_manager.shutdown().await;
+        println!("Event mediator shutdown complete");
     }
 }
