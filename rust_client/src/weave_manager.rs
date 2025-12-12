@@ -1,9 +1,13 @@
+use crate::event_mediator::PlayerInfo;
 use crate::weave_client::{
     EndedCallSchemaForInsert, StartedCallSchemaForInsert, WeaveClient, WeaveConfig,
 };
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::fs;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -107,12 +111,12 @@ impl WeaveManager {
 
         // Log the session_init event as an atomic call
         let mut inputs = HashMap::new();
-        inputs.insert("tick".to_string(), tick.to_string());
-        inputs.insert("level_name".to_string(), level_name.clone());
+        inputs.insert("tick".to_string(), serde_json::json!(tick));
+        inputs.insert("level_name".to_string(), serde_json::json!(&level_name));
 
         let mut outputs = HashMap::new();
-        outputs.insert("session_id".to_string(), session_id.clone());
-        outputs.insert("level_name".to_string(), level_name);
+        outputs.insert("session_id".to_string(), serde_json::json!(session_id));
+        outputs.insert("level_name".to_string(), serde_json::json!(level_name));
 
         self.log_call("session_init".to_string(), tick, inputs, outputs)
             .await;
@@ -169,9 +173,15 @@ impl WeaveManager {
             call_id, operation, tick, session_id, weave_call_id
         );
 
+        // Convert string inputs to JSON
+        let mut inputs_json = HashMap::new();
+        for (k, v) in inputs.iter() {
+            inputs_json.insert(k.clone(), serde_json::json!(v));
+        }
+
         // Send to Weave
         if let Err(e) = self
-            .send_start_call(weave_call_id, trace_id, operation, tick, inputs)
+            .send_start_call(weave_call_id, trace_id, session_id, operation, tick, inputs_json)
             .await
         {
             eprintln!("⚠️  Failed to send start call to Weave: {}", e);
@@ -183,9 +193,10 @@ impl WeaveManager {
         &self,
         call_id: String,
         trace_id: String,
+        session_id: String,
         operation: String,
         tick: u64,
-        inputs: HashMap<String, String>,
+        inputs: HashMap<String, serde_json::Value>,
     ) -> Result<(), String> {
         let client_guard = self.client.lock().await;
         let client = client_guard
@@ -196,24 +207,18 @@ impl WeaveManager {
         let mut attributes: HashMap<String, serde_json::Value> = HashMap::new();
         attributes.insert("tick".to_string(), serde_json::json!(tick));
 
-        // Convert inputs to JSON values
-        let mut inputs_json: HashMap<String, serde_json::Value> = HashMap::new();
-        for (k, v) in inputs.iter() {
-            inputs_json.insert(k.clone(), serde_json::json!(v));
-        }
-
         let start = StartedCallSchemaForInsert {
             project_id: self.config.project_id(),
-            id: Some(call_id),
+            id: Some(call_id.clone()),
             op_name: operation,
             display_name: None,
             trace_id: Some(trace_id),
             parent_id: None,
-            thread_id: None,
-            turn_id: None,
+            thread_id: Some(session_id),
+            turn_id: Some(call_id),
             started_at: Utc::now(),
             attributes,
-            inputs: inputs_json,
+            inputs,
         };
 
         client.start_call(start).await
@@ -241,10 +246,16 @@ impl WeaveManager {
                     call_id, duration_ticks, success, context.session_id, context.call_id
                 );
 
+                // Convert string outputs to JSON
+                let mut outputs_json = HashMap::new();
+                for (k, v) in outputs.iter() {
+                    outputs_json.insert(k.clone(), serde_json::json!(v));
+                }
+
                 // Send to Weave
                 drop(active_calls); // Release lock before async call
                 if let Err(e) = self
-                    .send_end_call(context.call_id, tick, duration_ticks, outputs, success)
+                    .send_end_call(context.call_id, tick, duration_ticks, outputs_json, success)
                     .await
                 {
                     eprintln!("⚠️  Failed to send end call to Weave: {}", e);
@@ -259,7 +270,7 @@ impl WeaveManager {
         call_id: String,
         tick: u64,
         duration_ticks: u64,
-        outputs: HashMap<String, String>,
+        outputs: HashMap<String, serde_json::Value>,
         success: bool,
     ) -> Result<(), String> {
         let client_guard = self.client.lock().await;
@@ -268,12 +279,9 @@ impl WeaveManager {
             .ok_or_else(|| "Weave client not initialized".to_string())?;
 
         // Build output
-        let mut output_map: HashMap<String, serde_json::Value> = HashMap::new();
+        let mut output_map = outputs;
         output_map.insert("success".to_string(), serde_json::json!(success));
         output_map.insert("tick".to_string(), serde_json::json!(tick));
-        for (k, v) in outputs.iter() {
-            output_map.insert(k.clone(), serde_json::json!(v));
-        }
 
         // Build summary
         let mut summary: HashMap<String, serde_json::Value> = HashMap::new();
@@ -304,8 +312,8 @@ impl WeaveManager {
         &self,
         operation: String,
         tick: u64,
-        inputs: HashMap<String, String>,
-        outputs: HashMap<String, String>,
+        inputs: HashMap<String, serde_json::Value>,
+        outputs: HashMap<String, serde_json::Value>,
     ) {
         // Ensure client is initialized
         if let Err(e) = self.ensure_client().await {
@@ -341,6 +349,7 @@ impl WeaveManager {
             .send_start_call(
                 weave_call_id.clone(),
                 trace_id,
+                session_id.clone(),
                 operation.clone(),
                 tick,
                 inputs,
@@ -411,15 +420,15 @@ impl WeaveManager {
         surface: String,
     ) {
         let mut inputs = HashMap::new();
-        inputs.insert("player_index".to_string(), player_index.to_string());
-        inputs.insert("entity".to_string(), entity.clone());
-        inputs.insert("position_x".to_string(), position_x.to_string());
-        inputs.insert("position_y".to_string(), position_y.to_string());
-        inputs.insert("surface".to_string(), surface.clone());
+        inputs.insert("player_index".to_string(), serde_json::json!(player_index));
+        inputs.insert("entity".to_string(), serde_json::json!(entity));
+        inputs.insert("position_x".to_string(), serde_json::json!(position_x));
+        inputs.insert("position_y".to_string(), serde_json::json!(position_y));
+        inputs.insert("surface".to_string(), serde_json::json!(&surface));
 
         let mut outputs = HashMap::new();
-        outputs.insert("entity".to_string(), entity);
-        outputs.insert("surface".to_string(), surface);
+        outputs.insert("entity".to_string(), serde_json::json!(entity));
+        outputs.insert("surface".to_string(), serde_json::json!(surface));
 
         self.log_call("on_built_entity".to_string(), tick, inputs, outputs)
             .await;
@@ -436,15 +445,15 @@ impl WeaveManager {
         surface: String,
     ) {
         let mut inputs = HashMap::new();
-        inputs.insert("player_index".to_string(), player_index.to_string());
-        inputs.insert("entity".to_string(), entity.clone());
-        inputs.insert("position_x".to_string(), position_x.to_string());
-        inputs.insert("position_y".to_string(), position_y.to_string());
-        inputs.insert("surface".to_string(), surface.clone());
+        inputs.insert("player_index".to_string(), serde_json::json!(player_index));
+        inputs.insert("entity".to_string(), serde_json::json!(entity));
+        inputs.insert("position_x".to_string(), serde_json::json!(position_x));
+        inputs.insert("position_y".to_string(), serde_json::json!(position_y));
+        inputs.insert("surface".to_string(), serde_json::json!(&surface));
 
         let mut outputs = HashMap::new();
-        outputs.insert("entity".to_string(), entity);
-        outputs.insert("surface".to_string(), surface);
+        outputs.insert("entity".to_string(), serde_json::json!(entity));
+        outputs.insert("surface".to_string(), serde_json::json!(surface));
 
         self.log_call("on_player_mined_entity".to_string(), tick, inputs, outputs)
             .await;
@@ -459,16 +468,76 @@ impl WeaveManager {
         count: u32,
     ) {
         let mut inputs = HashMap::new();
-        inputs.insert("player_index".to_string(), player_index.to_string());
-        inputs.insert("item".to_string(), item.clone());
-        inputs.insert("count".to_string(), count.to_string());
+        inputs.insert("player_index".to_string(), serde_json::json!(player_index));
+        inputs.insert("item".to_string(), serde_json::json!(&item));
+        inputs.insert("count".to_string(), serde_json::json!(count));
 
         let mut outputs = HashMap::new();
-        outputs.insert("item".to_string(), item);
-        outputs.insert("count".to_string(), count.to_string());
+        outputs.insert("item".to_string(), serde_json::json!(item));
+        outputs.insert("count".to_string(), serde_json::json!(count));
 
         self.log_call("on_player_crafted_item".to_string(), tick, inputs, outputs)
             .await;
+    }
+
+    /// Handles player snapshot event (from Stats)
+    pub async fn handle_player_snapshot(
+        &self,
+        tick: u64,
+        player_info: PlayerInfo,
+        screenshot_path: String,
+    ) {
+        // Read the screenshot file and encode as base64
+        let screenshot_data = match self.read_screenshot(&screenshot_path).await {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!(
+                    "⚠️  Failed to read screenshot at {}: {}",
+                    screenshot_path, e
+                );
+                return;
+            }
+        };
+
+        // Build inputs with player position and screenshot as data URI
+        let mut inputs: HashMap<String, serde_json::Value> = HashMap::new();
+        inputs.insert("position_x".to_string(), serde_json::json!(player_info.position.x));
+        inputs.insert("position_y".to_string(), serde_json::json!(player_info.position.y));
+        inputs.insert("surface".to_string(), serde_json::json!(player_info.surface));
+        inputs.insert("health".to_string(), serde_json::json!(player_info.health));
+
+        // Create Weave Image object format
+        inputs.insert(
+            "screenshot".to_string(),
+            serde_json::json!({
+                "_type": "Image",
+                "data": screenshot_data
+            })
+        );
+
+        // Build outputs with the same screenshot path
+        let mut outputs: HashMap<String, serde_json::Value> = HashMap::new();
+        outputs.insert("screenshot_path".to_string(), serde_json::json!(screenshot_path));
+
+        // Log the call
+        self.log_call("player_snapshot".to_string(), tick, inputs, outputs)
+            .await;
+    }
+
+    /// Read screenshot file and encode as data URI
+    async fn read_screenshot(&self, path: &str) -> Result<String, String> {
+        // Get Factorio output directory from environment variable
+        let factorio_output_dir = std::env::var("FACTORIO_OUTPUT_PATH")
+            .map_err(|_| "FACTORIO_OUTPUT_PATH environment variable not set".to_string())?;
+
+        let full_path = std::path::Path::new(&factorio_output_dir).join(path);
+
+        let bytes = fs::read(&full_path)
+            .await
+            .map_err(|e| format!("Failed to read file {:?}: {}", full_path, e))?;
+
+        let base64_data = BASE64.encode(&bytes);
+        Ok(format!("data:image/png;base64,{}", base64_data))
     }
 
     /// Ends all active calls (used during session transitions)

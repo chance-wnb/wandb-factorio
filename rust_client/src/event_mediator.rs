@@ -10,6 +10,14 @@ pub struct Position {
     pub y: f64,
 }
 
+/// Player information from stats event
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PlayerInfo {
+    pub position: Position,
+    pub surface: String,
+    pub health: f64,
+}
+
 /// Event types from Factorio
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type")]
@@ -25,6 +33,10 @@ pub enum FactorioEvent {
         session_id: String,
         cycle: u64,
         tick: u64,
+        #[serde(default)]
+        player: Option<PlayerInfo>,
+        #[serde(default)]
+        screenshot_path: Option<String>,
         products_production: HashMap<String, f64>,
         materials_consumption: HashMap<String, f64>,
     },
@@ -121,6 +133,8 @@ impl EventMediator {
                 session_id,
                 cycle,
                 tick,
+                player,
+                screenshot_path,
                 products_production,
                 materials_consumption,
             } => {
@@ -136,9 +150,16 @@ impl EventMediator {
                     session_id,
                     cycle,
                     tick,
-                    products_production,
+                    products_production.clone(),
                     materials_consumption,
                 );
+
+                // Log player snapshot to Weave if player and screenshot are present
+                if let (Some(player_info), Some(screenshot)) = (player, screenshot_path) {
+                    self.weave_manager
+                        .handle_player_snapshot(tick, player_info, screenshot)
+                        .await;
+                }
             }
             FactorioEvent::GameEvent {
                 event_name,
