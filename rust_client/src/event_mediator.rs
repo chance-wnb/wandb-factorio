@@ -3,6 +3,13 @@ use crate::weave_manager::WeaveManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Position in the game world
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Position {
+    pub x: f64,
+    pub y: f64,
+}
+
 /// Event types from Factorio
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type")]
@@ -21,11 +28,28 @@ pub enum FactorioEvent {
         products_production: HashMap<String, f64>,
         materials_consumption: HashMap<String, f64>,
     },
-    // TODO: Add Weave-specific event types here
-    // #[serde(rename = "trace_start")]
-    // TraceStart { ... },
-    // #[serde(rename = "trace_end")]
-    // TraceEnd { ... },
+    #[serde(rename = "event")]
+    GameEvent {
+        event_name: String,
+        session_id: String,
+        tick: u64,
+        #[serde(default)]
+        player_index: Option<u32>,
+        #[serde(default)]
+        entity: Option<String>,
+        #[serde(default)]
+        position: Option<Position>,
+        #[serde(default)]
+        surface: Option<String>,
+        #[serde(default)]
+        tech_name: Option<String>,
+        #[serde(default)]
+        tech_level: Option<u32>,
+        #[serde(default)]
+        item: Option<String>,
+        #[serde(default)]
+        count: Option<u32>,
+    },
 }
 
 /// Event mediator that routes Factorio events to WandB and Weave managers
@@ -115,6 +139,67 @@ impl EventMediator {
                     products_production,
                     materials_consumption,
                 );
+            }
+            FactorioEvent::GameEvent {
+                event_name,
+                session_id: _,
+                tick,
+                player_index,
+                entity,
+                position,
+                surface,
+                tech_name,
+                tech_level,
+                item,
+                count,
+            } => {
+                println!("  [{}] GameEvent: {} (tick: {})", index, event_name, tick);
+
+                // Route to appropriate handler based on event_name
+                match event_name.as_str() {
+                    "on_research_started" => {
+                        if let (Some(name), Some(level)) = (tech_name, tech_level) {
+                            self.weave_manager
+                                .handle_research_started(tick, name, level)
+                                .await;
+                        }
+                    }
+                    "on_research_finished" => {
+                        if let (Some(name), Some(level)) = (tech_name, tech_level) {
+                            self.weave_manager
+                                .handle_research_finished(tick, name, level)
+                                .await;
+                        }
+                    }
+                    "on_built_entity" => {
+                        if let (Some(idx), Some(ent), Some(pos), Some(surf)) =
+                            (player_index, entity, position, surface)
+                        {
+                            self.weave_manager
+                                .handle_entity_built(tick, idx, ent, pos.x, pos.y, surf)
+                                .await;
+                        }
+                    }
+                    "on_player_mined_entity" => {
+                        if let (Some(idx), Some(ent), Some(pos), Some(surf)) =
+                            (player_index, entity, position, surface)
+                        {
+                            self.weave_manager
+                                .handle_entity_mined(tick, idx, ent, pos.x, pos.y, surf)
+                                .await;
+                        }
+                    }
+                    "on_player_crafted_item" => {
+                        if let (Some(idx), Some(itm), Some(cnt)) = (player_index, item, count) {
+                            self.weave_manager
+                                .handle_item_crafted(tick, idx, itm, cnt)
+                                .await;
+                        }
+                    }
+                    _ => {
+                        eprintln!("  [{}] Unknown event type: {}", index, event_name);
+                    }
+                }
             }
         }
     }
