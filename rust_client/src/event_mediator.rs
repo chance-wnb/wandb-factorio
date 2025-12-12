@@ -1,5 +1,6 @@
 use crate::wandb_manager::WandbManager;
 use crate::weave_manager::WeaveManager;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -68,6 +69,8 @@ pub enum FactorioEvent {
 pub struct EventMediator {
     wandb_manager: WandbManager,
     weave_manager: WeaveManager,
+    /// Maps Factorio session_id -> enhanced run_name (with random suffix)
+    session_to_runname: std::sync::Arc<tokio::sync::Mutex<HashMap<String, String>>>,
 }
 
 impl EventMediator {
@@ -76,6 +79,7 @@ impl EventMediator {
         EventMediator {
             wandb_manager,
             weave_manager,
+            session_to_runname: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -117,16 +121,26 @@ impl EventMediator {
                 tick,
                 level_name,
             } => {
+                // Generate run name with random seed (source of truth for both WandB and Weave)
+                let random_seed: u32 = rand::thread_rng().gen();
+                let run_name = format!("{}_{}", session_id, random_seed);
+
                 println!(
-                    "  [{}] SessionInit: {} (tick: {}, level: {})",
-                    index, session_id, tick, level_name
+                    "  [{}] SessionInit: {} -> run_name: {} (tick: {}, level: {})",
+                    index, session_id, run_name, tick, level_name
                 );
 
-                // Notify both WandB and Weave managers
+                // Store the mapping from session_id to run_name
+                self.session_to_runname
+                    .lock()
+                    .await
+                    .insert(session_id.clone(), run_name.clone());
+
+                // Notify both WandB and Weave managers with the same run_name
                 self.wandb_manager
-                    .handle_session_init(session_id.clone(), tick, level_name.clone());
+                    .handle_session_init(run_name.clone(), tick, level_name.clone());
                 self.weave_manager
-                    .handle_session_init(session_id, tick, level_name)
+                    .handle_session_init(run_name, tick, level_name)
                     .await;
             }
             FactorioEvent::Stats {
@@ -146,8 +160,21 @@ impl EventMediator {
                     products_production.len(),
                     materials_consumption.len()
                 );
+
+                // Look up the run_name for this session_id
+                let run_name = {
+                    let mapping = self.session_to_runname.lock().await;
+                    mapping.get(&session_id).cloned().unwrap_or_else(|| {
+                        // If no mapping exists, create a JIT run_name
+                        let random_seed: u32 = rand::thread_rng().gen();
+                        let jit_run_name = format!("{}_{}", session_id, random_seed);
+                        println!("⚠️  No run_name mapping for session {}. Creating JIT: {}", session_id, jit_run_name);
+                        jit_run_name
+                    })
+                };
+
                 self.wandb_manager.handle_stats_event(
-                    session_id,
+                    run_name,
                     cycle,
                     tick,
                     products_production.clone(),

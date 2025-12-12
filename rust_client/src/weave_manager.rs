@@ -111,6 +111,7 @@ impl WeaveManager {
 
         // Log the session_init event as an atomic call
         let mut inputs = HashMap::new();
+        inputs.insert("session_id".to_string(), serde_json::json!(&session_id));
         inputs.insert("tick".to_string(), serde_json::json!(tick));
         inputs.insert("level_name".to_string(), serde_json::json!(&level_name));
 
@@ -173,8 +174,9 @@ impl WeaveManager {
             call_id, operation, tick, session_id, weave_call_id
         );
 
-        // Convert string inputs to JSON
+        // Convert string inputs to JSON and add session_id
         let mut inputs_json = HashMap::new();
+        inputs_json.insert("session_id".to_string(), serde_json::json!(&session_id));
         for (k, v) in inputs.iter() {
             inputs_json.insert(k.clone(), serde_json::json!(v));
         }
@@ -246,8 +248,9 @@ impl WeaveManager {
                     call_id, duration_ticks, success, context.session_id, context.call_id
                 );
 
-                // Convert string outputs to JSON
+                // Convert string outputs to JSON and add session_id
                 let mut outputs_json = HashMap::new();
+                outputs_json.insert("session_id".to_string(), serde_json::json!(&context.session_id));
                 for (k, v) in outputs.iter() {
                     outputs_json.insert(k.clone(), serde_json::json!(v));
                 }
@@ -344,6 +347,13 @@ impl WeaveManager {
             operation, tick, session_id, weave_call_id
         );
 
+        // Add session_id to inputs and outputs
+        let mut inputs_with_session = inputs;
+        inputs_with_session.insert("session_id".to_string(), serde_json::json!(&session_id));
+
+        let mut outputs_with_session = outputs;
+        outputs_with_session.insert("session_id".to_string(), serde_json::json!(&session_id));
+
         // Send start and end calls
         if let Err(e) = self
             .send_start_call(
@@ -352,7 +362,7 @@ impl WeaveManager {
                 session_id.clone(),
                 operation.clone(),
                 tick,
-                inputs,
+                inputs_with_session,
             )
             .await
         {
@@ -361,7 +371,7 @@ impl WeaveManager {
         }
 
         if let Err(e) = self
-            .send_end_call(weave_call_id, tick, 0, outputs, true)
+            .send_end_call(weave_call_id, tick, 0, outputs_with_session, true)
             .await
         {
             eprintln!("⚠️  Failed to send end call to Weave: {}", e);

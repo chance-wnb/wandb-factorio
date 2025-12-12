@@ -39,6 +39,7 @@ impl WandbManager {
     }
 
     /// Handles a stats event. Ensures a session exists and logs metrics.
+    /// Note: session_id here should be the run_name (with random suffix) from EventMediator
     pub fn handle_stats_event(
         &self,
         session_id: String,
@@ -52,8 +53,9 @@ impl WandbManager {
 
         match current_session {
             None => {
-                // No active session - create one immediately
-                println!("⚠️  Stats received without active session. Creating session: {}", session_id);
+                // No active session - this shouldn't happen since session_init comes first,
+                // but create a JIT session if needed with the provided session_id
+                println!("⚠️  Stats received without active session. Creating JIT session: {}", session_id);
                 self.start_new_session(session_id.clone(), tick, "unknown".to_string());
             }
             Some(ref current_id) if current_id != &session_id => {
@@ -72,11 +74,8 @@ impl WandbManager {
     }
 
     /// Starts a new WandB session
-    fn start_new_session(&self, session_id: String, tick: u64, level_name: String) {
-        // Generate run name with random seed
-        let random_seed: u32 = rand::random();
-        let run_name = format!("{}_{}", session_id, random_seed);
-
+    /// Note: run_name should be the enhanced session ID (with random suffix) from EventMediator
+    fn start_new_session(&self, run_name: String, _tick: u64, _level_name: String) {
         println!("🚀 Starting new WandB run: {}", run_name);
 
         // Configure WandB settings
@@ -88,9 +87,9 @@ impl WandbManager {
         // Initialize run
         match wandb::init(project, Some(settings)) {
             Ok(run) => {
-                // Store the run
+                // Store the run and use run_name as the session_id
                 *self.current_run.lock().unwrap() = Some(run);
-                *self.current_session_id.lock().unwrap() = Some(session_id);
+                *self.current_session_id.lock().unwrap() = Some(run_name);
 
                 println!("✅ WandB run initialized successfully");
             }
