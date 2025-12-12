@@ -137,19 +137,17 @@ impl WeaveManager {
             return;
         }
 
-        // Get or create session
-        let mut session_guard = self.current_session_id.lock().await;
-        let session_id = match session_guard.as_ref() {
-            Some(id) => id.clone(),
-            None => {
-                // Create a just-in-time session if none exists
-                let jit_session_id = format!("jit_session_{}", tick);
-                println!("🔷 Creating JIT session: {}", jit_session_id);
-                *session_guard = Some(jit_session_id.clone());
-                jit_session_id
+        // Get active session
+        let session_id = {
+            let session_guard = self.current_session_id.lock().await;
+            match session_guard.as_ref() {
+                Some(id) => id.clone(),
+                None => {
+                    eprintln!("⚠️  Cannot start call '{}': no active Weave session", operation);
+                    return;
+                }
             }
         };
-        drop(session_guard);
 
         // Now we're guaranteed to have a session_id
         // Generate UUIDs
@@ -324,19 +322,17 @@ impl WeaveManager {
             return;
         }
 
-        // Get or create session
-        let mut session_guard = self.current_session_id.lock().await;
-        let session_id = match session_guard.as_ref() {
-            Some(id) => id.clone(),
-            None => {
-                // Create a just-in-time session if none exists
-                let jit_session_id = format!("jit_session_{}", tick);
-                println!("🔷 Creating JIT session: {}", jit_session_id);
-                *session_guard = Some(jit_session_id.clone());
-                jit_session_id
+        // Get active session
+        let session_id = {
+            let session_guard = self.current_session_id.lock().await;
+            match session_guard.as_ref() {
+                Some(id) => id.clone(),
+                None => {
+                    eprintln!("⚠️  Cannot log Weave call '{}': no active session", operation);
+                    return;
+                }
             }
         };
-        drop(session_guard);
 
         // Generate UUIDs
         let weave_call_id = Uuid::now_v7().to_string();

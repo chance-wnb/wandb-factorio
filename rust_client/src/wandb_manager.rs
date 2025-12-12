@@ -38,35 +38,26 @@ impl WandbManager {
         self.start_new_session(session_id, tick, level_name);
     }
 
-    /// Handles a stats event. Ensures a session exists and logs metrics.
-    /// Note: session_id here should be the run_name (with random suffix) from EventMediator
+    /// Handles a stats event and logs metrics.
+    /// Note: run_name should be provided by EventMediator (with random suffix).
+    /// EventMediator ensures the session is initialized before calling this.
     pub fn handle_stats_event(
         &self,
-        session_id: String,
+        run_name: String,
         cycle: u64,
-        tick: u64,
+        _tick: u64,
         products_production: HashMap<String, f64>,
         materials_consumption: HashMap<String, f64>,
     ) {
-        // Check if we need to start a new session
+        // Verify we have an active session
         let current_session = self.current_session_id.lock().unwrap().clone();
 
-        match current_session {
-            None => {
-                // No active session - this shouldn't happen since session_init comes first,
-                // but create a JIT session if needed with the provided session_id
-                println!("⚠️  Stats received without active session. Creating JIT session: {}", session_id);
-                self.start_new_session(session_id.clone(), tick, "unknown".to_string());
-            }
-            Some(ref current_id) if current_id != &session_id => {
-                // Session ID mismatch - start new session
-                println!("⚠️  Session ID mismatch. Switching from {} to {}", current_id, session_id);
-                self.finish_current_session();
-                self.start_new_session(session_id.clone(), tick, "unknown".to_string());
-            }
-            _ => {
-                // Session matches, continue
-            }
+        if current_session.as_ref() != Some(&run_name) {
+            eprintln!(
+                "⚠️  Session mismatch: expected '{}', got '{:?}'. This should not happen!",
+                run_name, current_session
+            );
+            return;
         }
 
         // Log metrics
