@@ -1,5 +1,6 @@
 use crate::wandb_manager::WandbManager;
 use crate::weave_manager::WeaveManager;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -68,6 +69,8 @@ pub enum FactorioEvent {
 pub struct EventMediator {
     wandb_manager: WandbManager,
     weave_manager: WeaveManager,
+    /// Maps Factorio session_id -> enhanced run_name (with random suffix)
+    session_to_runname: std::sync::Arc<tokio::sync::Mutex<HashMap<String, String>>>,
 }
 
 impl EventMediator {
@@ -76,7 +79,47 @@ impl EventMediator {
         EventMediator {
             wandb_manager,
             weave_manager,
+            session_to_runname: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Gets or creates a session run_name for a given session_id.
+    /// If the session_id already has a mapping, returns it.
+    /// Otherwise, creates a new run_name with random suffix and initializes both managers.
+    async fn get_or_create_session(
+        &self,
+        session_id: String,
+        tick: u64,
+        level_name: String,
+    ) -> String {
+        let mut mapping = self.session_to_runname.lock().await;
+
+        if let Some(run_name) = mapping.get(&session_id) {
+            // Session already exists
+            return run_name.clone();
+        }
+
+        // Create new session with random suffix
+        let random_suffix: u32 = rand::thread_rng().gen();
+        let run_name = format!("{}_{}", session_id, random_suffix);
+
+        println!(
+            "🔶 Creating session: {} -> {} (level: {})",
+            session_id, run_name, level_name
+        );
+
+        // Store the mapping
+        mapping.insert(session_id.clone(), run_name.clone());
+        drop(mapping); // Release lock before async calls
+
+        // Initialize both managers
+        self.wandb_manager
+            .handle_session_init(run_name.clone(), tick, level_name.clone());
+        self.weave_manager
+            .handle_session_init(run_name.clone(), tick, level_name)
+            .await;
+
+        run_name
     }
 
     /// Processes a batch of JSONL event strings (async)
@@ -118,16 +161,16 @@ impl EventMediator {
                 level_name,
             } => {
                 println!(
-                    "  [{}] SessionInit: {} (tick: {}, level: {})",
+                    "  [{}] SessionInit: session={}, tick={}, level={}",
                     index, session_id, tick, level_name
                 );
 
-                // Notify both WandB and Weave managers
-                self.wandb_manager
-                    .handle_session_init(session_id.clone(), tick, level_name.clone());
-                self.weave_manager
-                    .handle_session_init(session_id, tick, level_name)
+                // Get or create session (will initialize managers if new)
+                let run_name = self
+                    .get_or_create_session(session_id, tick, level_name)
                     .await;
+
+                println!("  [{}] Using run_name: {}", index, run_name);
             }
             FactorioEvent::Stats {
                 session_id,
@@ -146,8 +189,14 @@ impl EventMediator {
                     products_production.len(),
                     materials_consumption.len()
                 );
+
+                // Get or create session (will initialize managers if new)
+                let run_name = self
+                    .get_or_create_session(session_id, tick, "unknown".to_string())
+                    .await;
+
                 self.wandb_manager.handle_stats_event(
-                    session_id,
+                    run_name,
                     cycle,
                     tick,
                     products_production.clone(),
@@ -163,7 +212,7 @@ impl EventMediator {
             }
             FactorioEvent::GameEvent {
                 event_name,
-                session_id: _,
+                session_id,
                 tick,
                 player_index,
                 entity,
@@ -175,6 +224,11 @@ impl EventMediator {
                 count,
             } => {
                 println!("  [{}] GameEvent: {} (tick: {})", index, event_name, tick);
+
+                // Get or create session (will initialize managers if new)
+                let _run_name = self
+                    .get_or_create_session(session_id, tick, "unknown".to_string())
+                    .await;
 
                 // Route to appropriate handler based on event_name
                 match event_name.as_str() {

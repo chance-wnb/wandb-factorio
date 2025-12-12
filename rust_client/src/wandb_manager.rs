@@ -38,33 +38,26 @@ impl WandbManager {
         self.start_new_session(session_id, tick, level_name);
     }
 
-    /// Handles a stats event. Ensures a session exists and logs metrics.
+    /// Handles a stats event and logs metrics.
+    /// Note: run_name should be provided by EventMediator (with random suffix).
+    /// EventMediator ensures the session is initialized before calling this.
     pub fn handle_stats_event(
         &self,
-        session_id: String,
+        run_name: String,
         cycle: u64,
-        tick: u64,
+        _tick: u64,
         products_production: HashMap<String, f64>,
         materials_consumption: HashMap<String, f64>,
     ) {
-        // Check if we need to start a new session
+        // Verify we have an active session
         let current_session = self.current_session_id.lock().unwrap().clone();
 
-        match current_session {
-            None => {
-                // No active session - create one immediately
-                println!("⚠️  Stats received without active session. Creating session: {}", session_id);
-                self.start_new_session(session_id.clone(), tick, "unknown".to_string());
-            }
-            Some(ref current_id) if current_id != &session_id => {
-                // Session ID mismatch - start new session
-                println!("⚠️  Session ID mismatch. Switching from {} to {}", current_id, session_id);
-                self.finish_current_session();
-                self.start_new_session(session_id.clone(), tick, "unknown".to_string());
-            }
-            _ => {
-                // Session matches, continue
-            }
+        if current_session.as_ref() != Some(&run_name) {
+            eprintln!(
+                "⚠️  Session mismatch: expected '{}', got '{:?}'. This should not happen!",
+                run_name, current_session
+            );
+            return;
         }
 
         // Log metrics
@@ -72,11 +65,8 @@ impl WandbManager {
     }
 
     /// Starts a new WandB session
-    fn start_new_session(&self, session_id: String, tick: u64, level_name: String) {
-        // Generate run name with random seed
-        let random_seed: u32 = rand::random();
-        let run_name = format!("{}_{}", session_id, random_seed);
-
+    /// Note: run_name should be the enhanced session ID (with random suffix) from EventMediator
+    fn start_new_session(&self, run_name: String, _tick: u64, _level_name: String) {
         println!("🚀 Starting new WandB run: {}", run_name);
 
         // Configure WandB settings
@@ -88,9 +78,9 @@ impl WandbManager {
         // Initialize run
         match wandb::init(project, Some(settings)) {
             Ok(run) => {
-                // Store the run
+                // Store the run and use run_name as the session_id
                 *self.current_run.lock().unwrap() = Some(run);
-                *self.current_session_id.lock().unwrap() = Some(session_id);
+                *self.current_session_id.lock().unwrap() = Some(run_name);
 
                 println!("✅ WandB run initialized successfully");
             }
