@@ -13,6 +13,8 @@ use uuid::Uuid;
 pub struct WeaveManager {
     current_session_id: Arc<Mutex<Option<String>>>,
     active_calls: Arc<Mutex<HashMap<String, CallContext>>>,
+    /// Cache for research events: key is "tech_name:tech_level", value is the call_id
+    research_cache: Arc<Mutex<HashMap<String, String>>>,
     client: Arc<Mutex<Option<WeaveClient>>>,
     config: WeaveConfig,
 }
@@ -24,7 +26,7 @@ struct CallContext {
     trace_id: String,
     session_id: String,
     start_tick: u64,
-    metadata: HashMap<String, String>,
+    inputs: HashMap<String, String>,
 }
 
 impl WeaveManager {
@@ -57,6 +59,7 @@ impl WeaveManager {
         WeaveManager {
             current_session_id: Arc::new(Mutex::new(None)),
             active_calls: Arc::new(Mutex::new(HashMap::new())),
+            research_cache: Arc::new(Mutex::new(HashMap::new())),
             client: Arc::new(Mutex::new(None)),
             config,
         }
@@ -83,6 +86,10 @@ impl WeaveManager {
 
         // End any active calls from previous session
         self.end_all_calls().await;
+
+        // Clear research cache for new session
+        self.research_cache.lock().await.clear();
+        println!("🔷 Research cache cleared for new session");
 
         // Store new session ID
         *self.current_session_id.lock().await = Some(session_id.clone());
@@ -117,48 +124,57 @@ impl WeaveManager {
         call_id: String,
         operation: String,
         tick: u64,
-        metadata: HashMap<String, String>,
+        inputs: HashMap<String, String>,
     ) {
-        let session_id = self.current_session_id.lock().await.clone();
+        // Ensure client is initialized (creates session if needed)
+        if let Err(e) = self.ensure_client().await {
+            eprintln!("⚠️  Failed to ensure Weave client: {}", e);
+            return;
+        }
 
-        match session_id {
+        // Get or create session
+        let mut session_guard = self.current_session_id.lock().await;
+        let session_id = match session_guard.as_ref() {
+            Some(id) => id.clone(),
             None => {
-                eprintln!(
-                    "⚠️  Cannot start Weave call '{}': no active session",
-                    call_id
-                );
+                // Create a just-in-time session if none exists
+                let jit_session_id = format!("jit_session_{}", tick);
+                println!("🔷 Creating JIT session: {}", jit_session_id);
+                *session_guard = Some(jit_session_id.clone());
+                jit_session_id
             }
-            Some(session_id) => {
-                // Generate UUIDs
-                let weave_call_id = Uuid::now_v7().to_string();
-                let trace_id = Uuid::now_v7().to_string();
+        };
+        drop(session_guard);
 
-                let context = CallContext {
-                    call_id: weave_call_id.clone(),
-                    trace_id: trace_id.clone(),
-                    session_id: session_id.clone(),
-                    start_tick: tick,
-                    metadata: metadata.clone(),
-                };
+        // Now we're guaranteed to have a session_id
+        // Generate UUIDs
+        let weave_call_id = Uuid::now_v7().to_string();
+        let trace_id = Uuid::now_v7().to_string();
 
-                self.active_calls
-                    .lock()
-                    .await
-                    .insert(call_id.clone(), context);
+        let context = CallContext {
+            call_id: weave_call_id.clone(),
+            trace_id: trace_id.clone(),
+            session_id: session_id.clone(),
+            start_tick: tick,
+            inputs: inputs.clone(),
+        };
 
-                println!(
-                    "🔷 Weave call started: '{}' operation='{}' tick={} session={} weave_id={}",
-                    call_id, operation, tick, session_id, weave_call_id
-                );
+        self.active_calls
+            .lock()
+            .await
+            .insert(call_id.clone(), context);
 
-                // Send to Weave
-                if let Err(e) = self
-                    .send_start_call(weave_call_id, trace_id, operation, tick, metadata)
-                    .await
-                {
-                    eprintln!("⚠️  Failed to send start call to Weave: {}", e);
-                }
-            }
+        println!(
+            "🔷 Weave call started: '{}' operation='{}' tick={} session={} weave_id={}",
+            call_id, operation, tick, session_id, weave_call_id
+        );
+
+        // Send to Weave
+        if let Err(e) = self
+            .send_start_call(weave_call_id, trace_id, operation, tick, inputs)
+            .await
+        {
+            eprintln!("⚠️  Failed to send start call to Weave: {}", e);
         }
     }
 
@@ -291,48 +307,168 @@ impl WeaveManager {
         inputs: HashMap<String, String>,
         outputs: HashMap<String, String>,
     ) {
-        let session_id = self.current_session_id.lock().await.clone();
-
-        match session_id {
-            None => {
-                eprintln!(
-                    "⚠️  Cannot log Weave call '{}': no active session",
-                    operation
-                );
-            }
-            Some(session_id) => {
-                // Generate UUIDs
-                let weave_call_id = Uuid::now_v7().to_string();
-                let trace_id = Uuid::now_v7().to_string();
-
-                println!(
-                    "🔷 Weave instant call: operation='{}' tick={} session={} weave_id={}",
-                    operation, tick, session_id, weave_call_id
-                );
-
-                // Send start and end calls
-                if let Err(e) = self
-                    .send_start_call(
-                        weave_call_id.clone(),
-                        trace_id,
-                        operation.clone(),
-                        tick,
-                        inputs,
-                    )
-                    .await
-                {
-                    eprintln!("⚠️  Failed to send start call to Weave: {}", e);
-                    return;
-                }
-
-                if let Err(e) = self
-                    .send_end_call(weave_call_id, tick, 0, outputs, true)
-                    .await
-                {
-                    eprintln!("⚠️  Failed to send end call to Weave: {}", e);
-                }
-            }
+        // Ensure client is initialized
+        if let Err(e) = self.ensure_client().await {
+            eprintln!("⚠️  Failed to ensure Weave client: {}", e);
+            return;
         }
+
+        // Get or create session
+        let mut session_guard = self.current_session_id.lock().await;
+        let session_id = match session_guard.as_ref() {
+            Some(id) => id.clone(),
+            None => {
+                // Create a just-in-time session if none exists
+                let jit_session_id = format!("jit_session_{}", tick);
+                println!("🔷 Creating JIT session: {}", jit_session_id);
+                *session_guard = Some(jit_session_id.clone());
+                jit_session_id
+            }
+        };
+        drop(session_guard);
+
+        // Generate UUIDs
+        let weave_call_id = Uuid::now_v7().to_string();
+        let trace_id = Uuid::now_v7().to_string();
+
+        println!(
+            "🔷 Weave instant call: operation='{}' tick={} session={} weave_id={}",
+            operation, tick, session_id, weave_call_id
+        );
+
+        // Send start and end calls
+        if let Err(e) = self
+            .send_start_call(
+                weave_call_id.clone(),
+                trace_id,
+                operation.clone(),
+                tick,
+                inputs,
+            )
+            .await
+        {
+            eprintln!("⚠️  Failed to send start call to Weave: {}", e);
+            return;
+        }
+
+        if let Err(e) = self
+            .send_end_call(weave_call_id, tick, 0, outputs, true)
+            .await
+        {
+            eprintln!("⚠️  Failed to send end call to Weave: {}", e);
+        }
+    }
+
+    /// Handles research started event
+    pub async fn handle_research_started(
+        &self,
+        tick: u64,
+        tech_name: String,
+        tech_level: u32,
+    ) {
+        let research_key = format!("{}:{}", tech_name, tech_level);
+
+        let mut inputs = HashMap::new();
+        inputs.insert("tech_name".to_string(), tech_name.clone());
+        inputs.insert("tech_level".to_string(), tech_level.to_string());
+
+        // Start a call and store the call_id in the research cache
+        self.start_call(
+            research_key.clone(),
+            "research".to_string(),
+            tick,
+            inputs,
+        )
+        .await;
+    }
+
+    /// Handles research finished event
+    pub async fn handle_research_finished(
+        &self,
+        tick: u64,
+        tech_name: String,
+        tech_level: u32,
+    ) {
+        let research_key = format!("{}:{}", tech_name, tech_level);
+
+        let mut outputs = HashMap::new();
+        outputs.insert("tech_name".to_string(), tech_name.clone());
+        outputs.insert("tech_level".to_string(), tech_level.to_string());
+        outputs.insert("completed".to_string(), "true".to_string());
+
+        // End the call using the research key as call_id
+        self.end_call(research_key, tick, outputs, true).await;
+    }
+
+    /// Handles entity built event
+    pub async fn handle_entity_built(
+        &self,
+        tick: u64,
+        player_index: u32,
+        entity: String,
+        position_x: f64,
+        position_y: f64,
+        surface: String,
+    ) {
+        let mut inputs = HashMap::new();
+        inputs.insert("player_index".to_string(), player_index.to_string());
+        inputs.insert("entity".to_string(), entity.clone());
+        inputs.insert("position_x".to_string(), position_x.to_string());
+        inputs.insert("position_y".to_string(), position_y.to_string());
+        inputs.insert("surface".to_string(), surface.clone());
+
+        let mut outputs = HashMap::new();
+        outputs.insert("entity".to_string(), entity);
+        outputs.insert("surface".to_string(), surface);
+
+        self.log_call("on_built_entity".to_string(), tick, inputs, outputs)
+            .await;
+    }
+
+    /// Handles entity mined event
+    pub async fn handle_entity_mined(
+        &self,
+        tick: u64,
+        player_index: u32,
+        entity: String,
+        position_x: f64,
+        position_y: f64,
+        surface: String,
+    ) {
+        let mut inputs = HashMap::new();
+        inputs.insert("player_index".to_string(), player_index.to_string());
+        inputs.insert("entity".to_string(), entity.clone());
+        inputs.insert("position_x".to_string(), position_x.to_string());
+        inputs.insert("position_y".to_string(), position_y.to_string());
+        inputs.insert("surface".to_string(), surface.clone());
+
+        let mut outputs = HashMap::new();
+        outputs.insert("entity".to_string(), entity);
+        outputs.insert("surface".to_string(), surface);
+
+        self.log_call("on_player_mined_entity".to_string(), tick, inputs, outputs)
+            .await;
+    }
+
+    /// Handles player crafted item event
+    pub async fn handle_item_crafted(
+        &self,
+        tick: u64,
+        player_index: u32,
+        item: String,
+        count: u32,
+    ) {
+        let mut inputs = HashMap::new();
+        inputs.insert("player_index".to_string(), player_index.to_string());
+        inputs.insert("item".to_string(), item.clone());
+        inputs.insert("count".to_string(), count.to_string());
+
+        let mut outputs = HashMap::new();
+        outputs.insert("item".to_string(), item);
+        outputs.insert("count".to_string(), count.to_string());
+
+        self.log_call("on_player_crafted_item".to_string(), tick, inputs, outputs)
+            .await;
     }
 
     /// Ends all active calls (used during session transitions)
