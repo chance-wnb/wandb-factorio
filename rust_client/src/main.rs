@@ -1,15 +1,19 @@
 mod event_mediator;
 mod pipe_cache;
 mod wandb_manager;
+mod weave_client;
+mod weave_manager;
 
 use event_mediator::EventMediator;
 use pipe_cache::PipeCache;
 use wandb_manager::WandbManager;
+use weave_manager::WeaveManager;
 use std::env;
-use std::thread;
-use std::time::Duration;
+use std::sync::Arc;
+use tokio::time::{sleep, Duration};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("Starting Factorio Rust Client...");
 
     // Get pipe path from environment variable
@@ -28,25 +32,35 @@ fn main() {
     }
 
     // Create pipe cache with 10,000 event capacity
-    let cache = PipeCache::new(10000);
+    let cache = Arc::new(PipeCache::new(10000));
 
-    // Create WandB manager and event mediator
+    // Create WandB manager, Weave manager, and event mediator
     let wandb_manager = WandbManager::new();
-    let mediator = EventMediator::new(wandb_manager);
+    let weave_manager = WeaveManager::new();
+    let mediator = Arc::new(EventMediator::new(wandb_manager, weave_manager));
 
     // Start the background reader thread
     cache.start_reader(pipe_path, log_path);
 
     println!("Pipe reader started. Monitoring events...\n");
 
+    // Set up graceful shutdown
+    let mediator_shutdown = mediator.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        println!("\n🛑 Received shutdown signal, cleaning up...");
+        mediator_shutdown.shutdown().await;
+        std::process::exit(0);
+    });
+
     // Process events by draining the queue
     loop {
-        thread::sleep(Duration::from_secs(5));
+        sleep(Duration::from_secs(5)).await;
 
         // Drain all events from the cache
         let events = cache.drain_all();
 
-        // Process events through the mediator
-        mediator.process_events(events);
+        // Process events through the mediator (async)
+        mediator.process_events(events).await;
     }
 }
